@@ -144,13 +144,34 @@ async def invite_to_group(
     else:
         group_id = group["id"]
 
-    # 3. Send actionable notification
-    # noti_type must fit within VARCHAR(20) — keep it short
-    noti_type = "group_invite"
-    noti_desc = f"{creator_name} te invitó al grupo '{group_name}'. group_id:{group_id}"
+    # 3. Find if creator has an active reservation for this space/time
+    # and link it to the group if not already linked.
+    try:
+        from database import get_connection, release_connection
+        conn = await get_connection()
+        try:
+            # Look for a reservation created by this user in the last hour or for future
+            res = await conn.fetchrow(
+                "SELECT id FROM reservations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+                creator_int_id
+            )
+            if res:
+                res_id = res["id"]
+                await conn.execute("UPDATE study_groups SET reservation_id = $1 WHERE id = $2", res_id, group_id)
+                await conn.execute("UPDATE reservations SET group_id = $1 WHERE id = $2", group_id, res_id)
+                print(f"DEBUG: Linked group {group_id} to reservation {res_id}")
+        finally:
+            await release_connection(conn)
+    except Exception as e:
+        print(f"Error linking reservation: {e}")
+
+    # 4. Send actionable notification
+    # noti_type fits within VARCHAR(50) — used by frontend to show Aceptar/Rechazar
+    noti_type = f"invite_group:{group_id}"
+    noti_desc = f"{creator_name} te invitó al grupo de estudio '{group_name}'."
     noti_query = """
         INSERT INTO notifications (user_id, title, description, type)
-        VALUES ($1, 'Invitación a Grupo de Estudio', $2, $3)
+        VALUES ($1, 'Invitación a Grupo', $2, $3)
         RETURNING id
     """
     await execute_returning(noti_query, None, target_id, noti_desc, noti_type)

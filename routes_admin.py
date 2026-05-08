@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Path
+from fastapi import APIRouter, HTTPException, Depends, Path, Form
 from db_utils import fetch_all, fetch_one, execute_query, execute_returning
 from typing import List
 
@@ -28,7 +28,7 @@ async def get_all_users():
                 p.first_name || ' ' || p.last_name as full_name, 
                 u.email, 
                 COALESCE(r.description, 'student') as role,
-                'ACTIVO' as status,
+                CASE WHEN COALESCE(u.active, TRUE) THEN 'active' ELSE 'inactive' END as status,
                 u.created_at
             FROM users u
             JOIN people p ON u.person_id = p.id
@@ -41,3 +41,47 @@ async def get_all_users():
     except Exception as e:
         print(f"CRITICAL ERROR in get_all_users: {str(e)}")
         raise HTTPException(500, detail=f"Error interno: {str(e)}")
+
+@router.post("/users/{id}/status")
+async def update_user_status(
+    id: str = Path(...),
+    status: str = Form(...)
+):
+    # Asegurarnos de que la columna existe
+    try:
+        await execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'")
+    except:
+        pass
+
+    # Intentar convertir a int si es posible (para compatibilidad con IDs numéricos)
+    try:
+        target_id = int(id)
+    except ValueError:
+        target_id = id
+
+    query = "UPDATE users SET status = $1 WHERE id = $2 RETURNING id"
+    row = await execute_returning(query, "Usuario no encontrado", status, target_id)
+    return {"id": row["id"], "new_status": status}
+
+@router.put("/users/{id}/toggle-status")
+async def toggle_user_status_admin(id: str = Path(...)):
+    try:
+        await execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
+    except:
+        pass
+
+    try:
+        target_id = int(id)
+    except ValueError:
+        target_id = id
+
+    query = """
+        UPDATE users 
+        SET active = NOT COALESCE(active, TRUE)
+        WHERE id = $1 
+        RETURNING id, active
+    """
+    row = await execute_returning(query, "Usuario no encontrado", target_id)
+    
+    new_status = "active" if row["active"] else "inactive"
+    return {"id": row["id"], "status": new_status}

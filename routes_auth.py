@@ -72,10 +72,13 @@ async def register(
 @router.post("/login")
 async def login(email: str = Form(...), password: str = Form(...)):
     try:
-        row = await fetch_one("SELECT id, password_hash FROM users WHERE email = $1", "Correo o contraseña incorrectos", email.lower())
+        row = await fetch_one("SELECT id, password_hash, COALESCE(active, TRUE) as active FROM users WHERE email = $1", "Correo o contraseña incorrectos", email.lower())
         
         if not row or not verify_password(password, row["password_hash"]):
             raise HTTPException(401, "Correo o contraseña incorrectos")
+        
+        if not row["active"]:
+            raise HTTPException(403, "Tu cuenta ha sido bloqueada. Contacta al administrador.")
             
         # Retornamos user_id para compatibilidad con el frontend (Auth.tsx)
         return {
@@ -83,6 +86,10 @@ async def login(email: str = Form(...), password: str = Form(...)):
             "user_id": str(row["id"])
         }
     except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error en login: {e}")
+        raise HTTPException(500, "Error en el servidor al iniciar sesión.")
         raise e
     except Exception as e:
         print(f"Error en login: {e}")

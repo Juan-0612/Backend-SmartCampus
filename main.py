@@ -26,6 +26,7 @@ from routes_study_groups import router as router_study_groups
 from routes_profiles import router as router_profiles
 from routes_auth import router as router_auth
 from routes_admin import router as router_admin
+from routes_space_schedules import router as router_space_schedules
 
 from database import init_db_pool, close_db_pool
 
@@ -56,11 +57,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
-# ──────────────────────────────────────────────
-#  CORS
-# ──────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -68,6 +64,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # ──────────────────────────────────────────────
 #  Routers
@@ -90,10 +88,12 @@ app.include_router(router_study_groups)
 app.include_router(router_profiles)
 app.include_router(router_auth)
 app.include_router(router_admin)
+app.include_router(router_space_schedules)
 
 # ──────────────────────────────────────────────
 #  Health check
 # ──────────────────────────────────────────────
 @app.get("/")
 async def root():
+    return {"message": "SmartCampus API running [OK]"}
     return {"message": "SmartCampus API running [OK]"}
