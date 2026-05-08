@@ -68,7 +68,9 @@ async def create_reservation(
     end_time: datetime = Form(...),
     status: str = Form(default="REVISIÓN"),
     type: Optional[str] = Form(default=None),
-    group_id: Optional[int] = Form(default=None)
+    group_id: Optional[int] = Form(default=None),
+    priority: str = Form(default="NORMAL"),
+    details: Optional[str] = Form(default=None)
 ):
     # Make datetimes naive to avoid asyncpg offset-naive vs offset-aware errors
     if start_time.tzinfo:
@@ -81,17 +83,7 @@ async def create_reservation(
     py_start = dt_time(start_time.hour, start_time.minute)
     py_end = dt_time(end_time.hour, end_time.minute)
 
-    # 1. Must fall within an ACTIVE and FREE schedule
-    availability = await fetch_all("""
-        SELECT * FROM space_schedules
-        WHERE space_id = $1 AND day_of_week = $2 AND is_active = TRUE AND is_free = TRUE
-        AND start_time <= $3 AND end_time >= $4
-    """, space_id, day_of_week, py_start, py_end)
-
-    if not availability:
-        raise HTTPException(status_code=400, detail="Este horario no ha sido habilitado para reservas por el administrador.")
-
-    # 2. Must NOT overlap with any ACTIVE and BLOCKED (is_free=FALSE) schedule
+    # 1. Must NOT overlap with any ACTIVE and BLOCKED (is_free=FALSE) schedule
     conflicts = await fetch_all("""
         SELECT * FROM space_schedules
         WHERE space_id = $1 AND day_of_week = $2 AND is_active = TRUE AND is_free = FALSE
@@ -105,12 +97,26 @@ async def create_reservation(
     if conflicts:
         raise HTTPException(status_code=400, detail="Este horario está bloqueado por una clase o actividad fija.")
 
+    # 2. If there are EXPLICIT 'is_free=TRUE' schedules for this space, it MUST fall into one of them.
+    # If there are NO 'is_free=TRUE' schedules defined, we assume the space is open by default.
+    any_free_defined = await fetch_all("SELECT 1 FROM space_schedules WHERE space_id = $1 AND is_active = TRUE AND is_free = TRUE", space_id)
+    
+    if any_free_defined:
+        availability = await fetch_all("""
+            SELECT * FROM space_schedules
+            WHERE space_id = $1 AND day_of_week = $2 AND is_active = TRUE AND is_free = TRUE
+            AND start_time <= $3 AND end_time >= $4
+        """, space_id, day_of_week, py_start, py_end)
+
+        if not availability:
+            raise HTTPException(status_code=400, detail="Este horario no ha sido habilitado para reservas por el administrador.")
+
     query = """
-        INSERT INTO reservations (user_id, space_id, start_time, end_time, status, type, group_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO reservations (user_id, space_id, start_time, end_time, status, type, group_id, priority, details)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
     """
-    row = await execute_returning(query, None, user_id, space_id, start_time, end_time, status, type, group_id)
+    row = await execute_returning(query, None, user_id, space_id, start_time, end_time, status, type, group_id, priority, details)
     
     # If group_id is provided, also link study_groups.reservation_id
     if group_id:
@@ -118,8 +124,6 @@ async def create_reservation(
             await execute_returning("UPDATE study_groups SET reservation_id = $1 WHERE id = $2 RETURNING id", None, row["id"], group_id)
         except Exception as e:
             print(f"Error linking group to reservation: {e}")
-    
-    return row
     
     # 🔔 Notificar admins
     try:
