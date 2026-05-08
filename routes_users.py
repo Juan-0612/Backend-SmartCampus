@@ -90,7 +90,7 @@ async def toggle_user_status(id: str = Path(...)):
 
     query = """
         UPDATE users
-        SET status = $1
+        SET status = $1, active = ($1 = 'active')
         WHERE id = $2
         RETURNING id, status
     """

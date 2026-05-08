@@ -77,11 +77,11 @@ async def toggle_user_status_admin(id: str = Path(...)):
 
     query = """
         UPDATE users 
-        SET active = NOT COALESCE(active, TRUE)
+        SET active = NOT COALESCE(active, TRUE),
+            status = CASE WHEN NOT COALESCE(active, TRUE) THEN 'active' ELSE 'inactive' END
         WHERE id = $1 
-        RETURNING id, active
+        RETURNING id, active, status
     """
     row = await execute_returning(query, "Usuario no encontrado", target_id)
     
-    new_status = "active" if row["active"] else "inactive"
-    return {"id": row["id"], "status": new_status}
+    return {"id": row["id"], "status": row["status"]}
