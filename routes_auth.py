@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Form, HTTPException
 from db_utils import fetch_all, fetch_one, execute_returning
 from passlib.context import CryptContext
+from auth_utils import create_access_token
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -80,10 +81,12 @@ async def login(email: str = Form(...), password: str = Form(...)):
         if not row["active"]:
             raise HTTPException(403, "Tu cuenta ha sido bloqueada. Contacta al administrador.")
             
-        # Retornamos user_id para compatibilidad con el frontend (Auth.tsx)
+        # Retornamos user_id y token para compatibilidad con el frontend
+        access_token = create_access_token(data={"sub": str(row["id"])})
         return {
             "message": "Inicio de sesión exitoso",
-            "user_id": str(row["id"])
+            "user_id": str(row["id"]),
+            "token": access_token
         }
     except HTTPException as e:
         raise e

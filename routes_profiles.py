@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Depends
 from db_utils import fetch_one
+from auth_utils import verify_token
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
 @router.get("/{user_id}")
-async def get_profile(user_id: int = Path(...)):
+async def get_profile(user_id: int = Path(...), token_payload: dict = Depends(verify_token)):
     try:
         query = """
             SELECT 
