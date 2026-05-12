@@ -57,6 +57,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"GLOBAL ERROR: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Error interno del servidor", "error": str(exc)},
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

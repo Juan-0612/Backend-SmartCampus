@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Form, HTTPException
 from db_utils import fetch_all, fetch_one, execute_returning
 from passlib.context import CryptContext
-from auth_utils import create_access_token
+from auth_utils import create_access_token, create_refresh_token, REFRESH_SECRET_KEY, ALGORITHM
+import jwt
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -83,17 +84,49 @@ async def login(email: str = Form(...), password: str = Form(...)):
             
         # Retornamos user_id y token para compatibilidad con el frontend
         access_token = create_access_token(data={"sub": str(row["id"])})
+        refresh_token = create_refresh_token(data={"sub": str(row["id"])})
         return {
             "message": "Inicio de sesión exitoso",
             "user_id": str(row["id"]),
-            "token": access_token
+            "token": access_token,
+            "refresh_token": refresh_token
         }
     except HTTPException as e:
         raise e
     except Exception as e:
         print(f"Error en login: {e}")
         raise HTTPException(500, "Error en el servidor al iniciar sesión.")
-        raise e
     except Exception as e:
         print(f"Error en login: {e}")
         raise HTTPException(500, "Error en el servidor al iniciar sesión.")
+
+@router.post("/refresh")
+async def refresh(refresh_token: str = Form(...)):
+    try:
+        # Decodificar el refresh token usando el secreto de refresh
+        payload = jwt.decode(refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(401, "Refresh token inválido")
+            
+        # Convert user_id to int if it's numeric
+        try:
+            db_id = int(user_id)
+        except (ValueError, TypeError):
+            db_id = user_id
+            
+        # Opcional: verificar si el usuario sigue activo
+        row = await fetch_one("SELECT id, COALESCE(active, TRUE) as active FROM users WHERE id = $1", "User not found", db_id)
+        if not row["active"]:
+            raise HTTPException(403, "Tu cuenta ha sido bloqueada. Contacta al administrador.")
+
+        # Emitir un nuevo access token
+        new_access_token = create_access_token(data={"sub": str(user_id)})
+        return {"token": new_access_token}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Refresh token expirado. Por favor, inicia sesión nuevamente.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Refresh token inválido")
+    except Exception as e:
+        print(f"Error en refresh: {e}")
+        raise HTTPException(500, "Error en el servidor al renovar sesión.")
