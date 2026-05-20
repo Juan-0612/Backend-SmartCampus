@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Form, Path, HTTPException
+from fastapi import APIRouter, Form, Path, HTTPException, Depends
 from typing import Optional
 from datetime import datetime
 from db_utils import fetch_all, fetch_one, execute_returning
+from auth_utils import verify_token
 
 router = APIRouter(prefix="/reservations", tags=["Reservations"])
 
@@ -158,14 +159,60 @@ async def create_reservation(
 @router.put("/{id}")
 async def update_reservation_status(
     id: int = Path(...),
-    status: str = "REVISIÓN"
+    status: str = "REVISIÓN",
+    payload: dict = Depends(verify_token)
 ):
-    # Obtener el space_id actual para actualizar su estado
-    res = await fetch_one("SELECT space_id FROM reservations WHERE id = $1", None, id)
+    current_user_id = int(payload["sub"])
     
+    # 1. Obtener detalles de la reserva
+    res = await fetch_one("SELECT user_id, space_id, status FROM reservations WHERE id = $1", "Reservation not found", id)
+    creator_id = res["user_id"]
+    space_id = res["space_id"]
+
+    # 2. Obtener el rol del usuario actual
+    role_row = await fetch_one("""
+        SELECT r.description 
+        FROM user_has_role uhr 
+        JOIN roles r ON uhr.role_id = r.id 
+        WHERE uhr.user_id = $1
+    """, None, current_user_id)
+    user_role = role_row["description"] if role_row else "student"
+
+    # 3. Validar permisos para el cambio de estado
+    if status in ['CONFIRMADA', 'RECHAZADA']:
+        if user_role != 'admin':
+            raise HTTPException(
+                status_code=403, 
+                detail="Prohibido: Solo los administradores pueden aprobar o rechazar solicitudes de reserva."
+            )
+    elif status == 'CANCELADA':
+        if user_role != 'admin' and current_user_id != creator_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Prohibido: No puedes cancelar una reserva que no te pertenece."
+            )
+    else:
+        if user_role != 'admin':
+            raise HTTPException(
+                status_code=403, 
+                detail="Prohibido: Acción no permitida para tu rol."
+            )
+
     query = "UPDATE reservations SET status = $1 WHERE id = $2 RETURNING id, space_id"
     row = await execute_returning(query, "Reservation not found", status, id)
     
+    # Si la reserva se cancela o rechaza, liberar el espacio si no hay otras activas
+    if status in ['CANCELADA', 'RECHAZADA']:
+        try:
+            await execute_returning("UPDATE spaces SET status = 'available' WHERE id = $1 RETURNING id", None, space_id)
+        except Exception as e:
+            print(f"Error releasing space: {e}")
+    elif status in ['CONFIRMADA', 'REVISIÓN']:
+        try:
+            await execute_returning("UPDATE spaces SET status = 'occupied' WHERE id = $1 RETURNING id", None, space_id)
+        except Exception as e:
+            print(f"Error marking space occupied: {e}")
+
     return {"updated": row["id"]}
 
 @router.put("/{id}/full")
@@ -178,8 +225,24 @@ async def update_reservation_full(
     status: str = Form(...),
     type: Optional[str] = Form(default=None),
     priority: str = Form(default="NORMAL"),
-    details: Optional[str] = Form(default=None)
+    details: Optional[str] = Form(default=None),
+    payload: dict = Depends(verify_token)
 ):
+    current_user_id = int(payload["sub"])
+    role_row = await fetch_one("""
+        SELECT r.description 
+        FROM user_has_role uhr 
+        JOIN roles r ON uhr.role_id = r.id 
+        WHERE uhr.user_id = $1
+    """, None, current_user_id)
+    user_role = role_row["description"] if role_row else "student"
+
+    if user_role != 'admin':
+        raise HTTPException(
+            status_code=403, 
+            detail="Prohibido: Solo los administradores pueden realizar una actualización completa de reserva."
+        )
+
     query = """
         UPDATE reservations
         SET user_id = $1, space_id = $2, start_time = $3, end_time = $4, status = $5, type = $6, priority = $7, details = $8
@@ -191,8 +254,6 @@ async def update_reservation_full(
     # Si la reserva se cancela o rechaza, liberar el espacio si no hay otras activas
     if status in ['CANCELADA', 'RECHAZADA']:
         try:
-            # Solo liberar si no hay otras reservas CONFIRMADA o REVISIÓN para este espacio en este momento
-            # Para simplificar el requerimiento del usuario, lo liberamos directamente
             await execute_returning("UPDATE spaces SET status = 'available' WHERE id = $1 RETURNING id", None, space_id)
         except Exception as e:
             print(f"Error releasing space: {e}")
@@ -205,6 +266,27 @@ async def update_reservation_full(
     return {"updated": row["id"]}
 
 @router.delete("/{id}")
-async def delete_reservation(id: int = Path(...)):
+async def delete_reservation(
+    id: int = Path(...),
+    payload: dict = Depends(verify_token)
+):
+    current_user_id = int(payload["sub"])
+    res = await fetch_one("SELECT user_id FROM reservations WHERE id = $1", "Reservation not found", id)
+    creator_id = res["user_id"]
+
+    role_row = await fetch_one("""
+        SELECT r.description 
+        FROM user_has_role uhr 
+        JOIN roles r ON uhr.role_id = r.id 
+        WHERE uhr.user_id = $1
+    """, None, current_user_id)
+    user_role = role_row["description"] if role_row else "student"
+
+    if user_role != 'admin' and current_user_id != creator_id:
+        raise HTTPException(
+            status_code=403, 
+            detail="Prohibido: No puedes eliminar el registro de una reserva que no te pertenece."
+        )
+
     row = await execute_returning("DELETE FROM reservations WHERE id = $1 RETURNING id", "Reservation not found", id)
     return {"deleted": row["id"]}
