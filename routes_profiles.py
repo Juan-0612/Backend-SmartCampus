@@ -14,7 +14,7 @@ async def get_profile(user_id: int = Path(...), token_payload: dict = Depends(ve
                 TRIM(CONCAT(p.first_name, ' ', p.last_name)) as full_name, 
                 u.email, 
                 'ACTIVO' as status,
-                COALESCE(sp.major, tp.department, 'Estudiante') as major,
+                COALESCE(sp.major, tp.department, r.description, 'General') as major,
                 COALESCE(p.identification_number, 'N/A') as student_id,
                 COALESCE(r.description, 'student') as role
             FROM users u
