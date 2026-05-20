@@ -32,13 +32,22 @@ from database import init_db_pool, close_db_pool
 
 load_dotenv()
 
+import asyncio
+from background_tasks import start_background_tasks
+
 # ──────────────────────────────────────────────
 #  Ciclo de vida
 # ──────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db_pool()
+    bg_task = asyncio.create_task(start_background_tasks())
     yield
+    bg_task.cancel()
+    try:
+        await bg_task
+    except asyncio.CancelledError:
+        pass
     await close_db_pool()
 
 # ──────────────────────────────────────────────
