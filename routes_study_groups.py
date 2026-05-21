@@ -112,7 +112,8 @@ async def invite_to_group(
     creator_id: str = Form(...),
     creator_name: str = Form(...),
     group_name: str = Form(...),
-    invited_email: str = Form(...)
+    invited_email: str = Form(...),
+    group_id: Optional[int] = Form(default=None)
 ):
     print(f"DEBUG: Inviting {invited_email} to {group_name} by {creator_name} ({creator_id})")
     
@@ -132,46 +133,57 @@ async def invite_to_group(
     print(f"DEBUG: Found target user ID: {target_id}")
     creator_int_id = int(creator_id)
 
-    # 2. Find or create group
-    from database import get_connection, release_connection
-    conn = await get_connection()
-    try:
-        group = await conn.fetchrow(
-            "SELECT id FROM study_groups WHERE name = $1 AND created_by = $2 ORDER BY created_at DESC LIMIT 1", 
-            group_name, creator_int_id
-        )
-    finally:
-        await release_connection(conn)
-    
-    if not group:
+    # 2. Find or create group — use group_id directly if provided
+    if group_id:
+        # Use the provided group_id directly (most reliable)
+        grp_rows = await fetch_all("SELECT id FROM study_groups WHERE id = $1", group_id)
+        if grp_rows:
+            resolved_group_id = group_id
+            group_found = True
+        else:
+            raise HTTPException(status_code=404, detail="No se encontró el grupo de estudio.")
+    else:
+        # Fallback: find by name + creator
+        from database import get_connection, release_connection
+        conn = await get_connection()
+        try:
+            grp = await conn.fetchrow(
+                "SELECT id FROM study_groups WHERE name = $1 AND created_by = $2 ORDER BY created_at DESC LIMIT 1",
+                group_name, creator_int_id
+            )
+        finally:
+            await release_connection(conn)
+        if grp:
+            resolved_group_id = grp["id"]
+            group_found = True
+        else:
+            resolved_group_id = None
+            group_found = False
+
+    if not group_found:
         print(f"DEBUG: Group '{group_name}' not found, creating new one.")
         query = "INSERT INTO study_groups (name, created_by) VALUES ($1, $2) RETURNING id"
         row = await execute_returning(query, None, group_name, creator_int_id)
-        group_id = row["id"]
-        # Add creator to the group automatically
-        await execute_returning("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) RETURNING id", None, group_id, creator_int_id)
+        resolved_group_id = row["id"]
+        await execute_returning("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) RETURNING id", None, resolved_group_id, creator_int_id)
     else:
-        group_id = group["id"]
         # Check if target user is already a member — fetch_all returns [] if not
         is_member_rows = await fetch_all(
             "SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2",
-            group_id, target_id
+            resolved_group_id, target_id
         )
         if is_member_rows:
-            raise HTTPException(
-                status_code=400,
-                detail="El usuario ya es miembro de este grupo de estudio."
-            )
-        # Check if there is already a pending invitation — fetch_all returns [] if not
+            raise HTTPException(status_code=400, detail="El usuario ya es miembro de este grupo de estudio.")
+        # Check pending invitation
         pending_rows = await fetch_all(
             "SELECT id FROM notifications WHERE user_id = $1 AND type = $2 AND is_read = False",
-            target_id, f"invite_group:{group_id}"
+            target_id, f"invite_group:{resolved_group_id}"
         )
         if pending_rows:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya se ha enviado una invitación pendiente a este usuario."
-            )
+            raise HTTPException(status_code=400, detail="Ya se ha enviado una invitación pendiente a este usuario.")
+
+
+    group_id = resolved_group_id
 
     # 3. Find if creator has an active reservation for this space/time
     # and link it to the group if not already linked.
