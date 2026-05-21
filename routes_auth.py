@@ -25,23 +25,34 @@ async def register(
     major: str = Form(default="General")
 ):
     try:
-        # Verificar si el correo ya existe
+        # 0. Verificar cédula duplicada
         try:
-            existing = await fetch_one("SELECT id FROM users WHERE email = $1", "Not found", email.lower())
-            if existing:
-                raise HTTPException(400, "El correo ya está registrado")
+            existing_person = await fetch_one(
+                "SELECT id FROM people WHERE identification_number = $1", "Not found", identification_number
+            )
+            if existing_person:
+                raise HTTPException(400, "El número de identificación ya está registrado en el sistema")
         except HTTPException as e:
             if e.status_code != 404:
                 raise e
 
-        # 1. Crear Persona
+        # 1. Verificar si el correo ya existe
+        try:
+            existing = await fetch_one("SELECT id FROM users WHERE email = $1", "Not found", email.lower())
+            if existing:
+                raise HTTPException(400, "El correo electrónico ya está registrado")
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise e
+
+        # 2. Crear Persona
         person = await execute_returning(
             "INSERT INTO people (identification_number, first_name, last_name) VALUES ($1, $2, $3) RETURNING id",
             None, identification_number, first_name, last_name
         )
         person_id = person["id"]
 
-        # 2. Crear Usuario
+        # 3. Crear Usuario
         hashed_password = get_password_hash(password)
         user = await execute_returning(
             "INSERT INTO users (person_id, email, password_hash) VALUES ($1, $2, $3) RETURNING id",
@@ -49,20 +60,30 @@ async def register(
         )
         user_id = user["id"]
 
-        # 3. Asignar Rol
+        # 4. Asignar Rol
         role_record = None
         try:
             role_record = await fetch_one("SELECT id FROM roles WHERE description = $1", "Not found", role.lower())
         except HTTPException:
             role_record = await execute_returning("INSERT INTO roles (description) VALUES ($1) RETURNING id", None, role.lower())
-        
+
         await execute_returning("INSERT INTO user_has_role (user_id, role_id) VALUES ($1, $2) RETURNING id", None, user_id, role_record["id"])
 
-        # 4. Crear Perfil
-        if role.lower() == "student":
-            await execute_returning("INSERT INTO student_profiles (user_id, major) VALUES ($1, $2) RETURNING user_id", None, user_id, major)
-        elif role.lower() == "teacher":
-            await execute_returning("INSERT INTO teacher_profiles (user_id, department) VALUES ($1, $2) RETURNING user_id", None, user_id, major)
+        # 5. Crear Perfil según rol
+        try:
+            if role.lower() == "student":
+                await execute_returning(
+                    "INSERT INTO student_profiles (user_id, major) VALUES ($1, $2) RETURNING user_id",
+                    None, user_id, major
+                )
+            elif role.lower() == "teacher":
+                await execute_returning(
+                    "INSERT INTO teacher_profiles (user_id, department) VALUES ($1, $2) RETURNING user_id",
+                    None, user_id, major
+                )
+        except Exception as profile_err:
+            # El perfil es opcional; si falla, la cuenta ya fue creada
+            print(f"Aviso: No se pudo crear perfil extendido: {profile_err}")
 
         return {"message": "Cuenta creada con éxito", "user_id": str(user_id)}
     except HTTPException as e:
