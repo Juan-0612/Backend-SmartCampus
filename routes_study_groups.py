@@ -118,16 +118,11 @@ async def invite_to_group(
     
     clean_email = invited_email.strip().lower()
     
-    # 1. Find invited user
-    target_user = await fetch_one(
-        "SELECT id FROM users WHERE LOWER(email) = $1", 
-        None, 
-        clean_email
-    )
+    # 1. Find invited user — fetch_all returns [] if not found (no exception)
+    results = await fetch_all("SELECT id FROM users WHERE LOWER(email) = $1", clean_email)
+    target_user = results[0] if results else None
     
     if not target_user:
-        # If not in users, check if they are in people? Actually, notifications need user_id.
-        # For now, return a clearer error with 400 instead of 404.
         raise HTTPException(
             status_code=400, 
             detail=f"El correo {clean_email} no está registrado en el sistema. Los miembros deben ser usuarios activos."
@@ -157,22 +152,22 @@ async def invite_to_group(
         await execute_returning("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) RETURNING id", None, group_id, creator_int_id)
     else:
         group_id = group["id"]
-        # Check if target user is already a member
-        is_member = await fetch_one(
+        # Check if target user is already a member — fetch_all returns [] if not
+        is_member_rows = await fetch_all(
             "SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2",
-            None, group_id, target_id
+            group_id, target_id
         )
-        if is_member:
+        if is_member_rows:
             raise HTTPException(
                 status_code=400,
                 detail="El usuario ya es miembro de este grupo de estudio."
             )
-        # Check if there is already a pending invitation
-        pending_invite = await fetch_one(
+        # Check if there is already a pending invitation — fetch_all returns [] if not
+        pending_rows = await fetch_all(
             "SELECT id FROM notifications WHERE user_id = $1 AND type = $2 AND is_read = False",
-            None, target_id, f"invite_group:{group_id}"
+            target_id, f"invite_group:{group_id}"
         )
-        if pending_invite:
+        if pending_rows:
             raise HTTPException(
                 status_code=400,
                 detail="Ya se ha enviado una invitación pendiente a este usuario."
