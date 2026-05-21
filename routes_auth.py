@@ -3,6 +3,7 @@ from db_utils import fetch_all, fetch_one, execute_returning
 from passlib.context import CryptContext
 from auth_utils import create_access_token, create_refresh_token, REFRESH_SECRET_KEY, ALGORITHM
 import jwt
+import re
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -25,6 +26,27 @@ async def register(
     major: str = Form(default="General")
 ):
     try:
+        # ══ VALIDACIONES DE FORMATO ══
+        # 1. Cédula/TI: solo dígitos, sin puntos ni guiones
+        if not re.fullmatch(r'\d+', identification_number.strip()):
+            raise HTTPException(400, "El número de identificación solo debe contener dígitos (sin puntos, guiones ni espacios).")
+
+        # 2. Correo institucional obligatorio
+        if not email.strip().lower().endswith('@ucundinamarca.edu.co'):
+            raise HTTPException(400, "El correo debe pertenecer al dominio institucional (@ucundinamarca.edu.co).")
+
+        # 3. Contraseña segura
+        pwd = password
+        if len(pwd) < 8:
+            raise HTTPException(400, "La contraseña debe tener al menos 8 caracteres.")
+        if not re.search(r'[A-Z]', pwd):
+            raise HTTPException(400, "La contraseña debe contener al menos una letra mayúscula.")
+        if not re.search(r'\d', pwd):
+            raise HTTPException(400, "La contraseña debe contener al menos un número.")
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>_\-+=/\\\[\]~`]', pwd):
+            raise HTTPException(400, "La contraseña debe contener al menos un carácter especial (!@#$%...).")
+
+        # ══ DUPLICADOS ══
         # 0. Verificar cédula duplicada
         try:
             existing_person = await fetch_one(
