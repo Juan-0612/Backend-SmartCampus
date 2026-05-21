@@ -31,6 +31,20 @@ async def delete_study_group(id: int = Path(...)):
     row = await execute_returning("DELETE FROM study_groups WHERE id = $1 RETURNING id", "Study group not found", id)
     return {"deleted": row["id"]}
 
+@router.put("/{id}")
+async def update_study_group(
+    id: int = Path(...),
+    name: str = Form(...)
+):
+    query = """
+        UPDATE study_groups
+        SET name = $1
+        WHERE id = $2
+        RETURNING id
+    """
+    row = await execute_returning(query, "Study group not found", name, id)
+    return {"updated": row["id"]}
+
 # --- Group Members ---
 
 @router.get("/{group_id}/members")
@@ -143,6 +157,26 @@ async def invite_to_group(
         await execute_returning("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) RETURNING id", None, group_id, creator_int_id)
     else:
         group_id = group["id"]
+        # Check if target user is already a member
+        is_member = await fetch_one(
+            "SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2",
+            None, group_id, target_id
+        )
+        if is_member:
+            raise HTTPException(
+                status_code=400,
+                detail="El usuario ya es miembro de este grupo de estudio."
+            )
+        # Check if there is already a pending invitation
+        pending_invite = await fetch_one(
+            "SELECT id FROM notifications WHERE user_id = $1 AND type = $2 AND is_read = False",
+            None, target_id, f"invite_group:{group_id}"
+        )
+        if pending_invite:
+            raise HTTPException(
+                status_code=400,
+                detail="Ya se ha enviado una invitación pendiente a este usuario."
+            )
 
     # 3. Find if creator has an active reservation for this space/time
     # and link it to the group if not already linked.
@@ -195,7 +229,26 @@ async def accept_invitation(
             None, group_id, user_id
         )
     
-    # 3. Mark notification as read (or delete it)
-    await execute_returning("UPDATE notifications SET is_read = True WHERE id = $1 RETURNING id", None, notification_id)
+    # 3. Delete notification so it cannot be opened/accepted again
+    await execute_returning("DELETE FROM notifications WHERE id = $1 RETURNING id", None, notification_id)
     
     return {"status": "ok", "message": f"Te has unido al grupo {group['name']}"}
+
+@router.post("/decline-invitation")
+async def decline_invitation(
+    notification_id: int = Form(...),
+    group_id: int = Form(...),
+    user_id: int = Form(...)
+):
+    # 1. Remove member from group if they were added (just in case)
+    await execute_returning(
+        "DELETE FROM group_members WHERE group_id = $1 AND user_id = $2 RETURNING id",
+        None, group_id, user_id
+    )
+    
+    # 2. Delete the notification
+    await execute_returning("DELETE FROM notifications WHERE id = $1 RETURNING id", None, notification_id)
+    
+    return {"status": "ok", "message": "Invitación rechazada"}
+
+

@@ -51,11 +51,11 @@ async def read_reservation(id: int = Path(...)):
     res = await fetch_one(query, "Reservation not found", id)
     if res and res.get("group_id"):
         members_query = """
-            SELECT p.first_name || ' ' || p.last_name as name, sp.major
+            SELECT u.id as user_id, p.first_name || ' ' || p.last_name as name, sp.major
             FROM group_members gm
             JOIN users u ON gm.user_id = u.id
             JOIN people p ON u.person_id = p.id
-            JOIN student_profiles sp ON u.id = sp.user_id
+            LEFT JOIN student_profiles sp ON u.id = sp.user_id
             WHERE gm.group_id = $1
         """
         res["members"] = await fetch_all(members_query, res["group_id"])
@@ -67,12 +67,27 @@ async def create_reservation(
     space_id: int = Form(...),
     start_time: datetime = Form(...),
     end_time: datetime = Form(...),
-    status: str = Form(default="REVISIÓN"),
+    status: str = Form(default="PENDIENTE"),
     type: Optional[str] = Form(default=None),
     group_id: Optional[int] = Form(default=None),
     priority: str = Form(default="NORMAL"),
-    details: Optional[str] = Form(default=None)
+    details: Optional[str] = Form(default=None),
+    payload: dict = Depends(verify_token)
 ):
+    current_user_id = int(payload["sub"])
+    role_row = await fetch_one("""
+        SELECT r.description 
+        FROM user_has_role uhr 
+        JOIN roles r ON uhr.role_id = r.id 
+        WHERE uhr.user_id = $1
+    """, None, current_user_id)
+    user_role = role_row["description"] if role_row else "student"
+
+    # Si no es admin, forzar que el estado sea 'PENDIENTE'
+    # Esto garantiza que las solicitudes de estudiantes/docentes deban ser aprobadas manualmente por el administrador
+    if user_role != 'admin':
+        status = "PENDIENTE"
+
     # Make datetimes naive to avoid asyncpg offset-naive vs offset-aware errors
     if start_time.tzinfo:
         start_time = start_time.replace(tzinfo=None)
@@ -159,7 +174,7 @@ async def create_reservation(
 @router.put("/{id}")
 async def update_reservation_status(
     id: int = Path(...),
-    status: str = "REVISIÓN",
+    status: str = "PENDIENTE",
     payload: dict = Depends(verify_token)
 ):
     current_user_id = int(payload["sub"])
@@ -207,7 +222,7 @@ async def update_reservation_status(
             await execute_returning("UPDATE spaces SET status = 'available' WHERE id = $1 RETURNING id", None, space_id)
         except Exception as e:
             print(f"Error releasing space: {e}")
-    elif status in ['CONFIRMADA', 'REVISIÓN']:
+    elif status in ['CONFIRMADA', 'PENDIENTE']:
         try:
             await execute_returning("UPDATE spaces SET status = 'occupied' WHERE id = $1 RETURNING id", None, space_id)
         except Exception as e:
@@ -257,7 +272,7 @@ async def update_reservation_full(
             await execute_returning("UPDATE spaces SET status = 'available' WHERE id = $1 RETURNING id", None, space_id)
         except Exception as e:
             print(f"Error releasing space: {e}")
-    elif status in ['CONFIRMADA', 'REVISIÓN']:
+    elif status in ['CONFIRMADA', 'PENDIENTE']:
         try:
             await execute_returning("UPDATE spaces SET status = 'occupied' WHERE id = $1 RETURNING id", None, space_id)
         except Exception as e:

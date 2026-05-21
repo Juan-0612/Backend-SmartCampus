@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import get_connection, release_connection
 
 async def start_background_tasks():
@@ -13,10 +13,12 @@ async def start_background_tasks():
         await asyncio.sleep(10) # Ejecutar cada 10 segundos
 
 async def check_and_send_reminders():
-    # Obtener la hora actual
-    now = datetime.now()
+    # Obtener la hora actual en la zona horaria local de Colombia (GMT-5) de forma robusta
+    bogota_tz = timezone(timedelta(hours=-5))
+    now = datetime.now(bogota_tz).replace(tzinfo=None)
     # Rango de 15 minutos en el futuro
     future_15m = now + timedelta(minutes=15)
+
     
     conn = await get_connection()
     try:
@@ -67,16 +69,18 @@ async def check_and_send_reminders():
         await release_connection(conn)
 
 async def check_and_cleanup_past_reservations():
-    now = datetime.now()
+    bogota_tz = timezone(timedelta(hours=-5))
+    now = datetime.now(bogota_tz).replace(tzinfo=None)
     conn = await get_connection()
     try:
-        # 1. Buscar reservaciones activas (CONFIRMADA, REVISIÓN) cuyo tiempo de fin ya pasó
+        # 1. Buscar únicamente reservaciones CONFIRMADAS cuyo tiempo de fin ya pasó
+        # (Las de REVISIÓN no se limpian automáticamente para que el admin las gestione manualmente)
         query = """
             SELECT r.*, s.id as space_id_real 
             FROM reservations r
             JOIN spaces s ON r.space_id = s.id
             WHERE r.end_time <= $1 
-              AND r.status IN ('CONFIRMADA', 'REVISIÓN', 'pending')
+              AND r.status = 'CONFIRMADA'
         """
         past_reservations = await conn.fetch(query, now)
         
