@@ -69,7 +69,7 @@ async def register(
         raise e
     except Exception as e:
         print(f"Error en register: {e}")
-        raise HTTPException(500, "Error interno del servidor al crear la cuenta.")
+        raise HTTPException(500, f"Error al crear la cuenta: {str(e)}")
 
 @router.post("/login")
 async def login(email: str = Form(...), password: str = Form(...)):
