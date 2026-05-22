@@ -1,8 +1,14 @@
-from fastapi import APIRouter, Form, Path
+from fastapi import APIRouter, Form, Path, File, UploadFile, HTTPException
+import os
+import uuid
 from typing import Optional
 from db_utils import fetch_all, fetch_one, execute_returning
 
 router = APIRouter(prefix="/spaces", tags=["Spaces"])
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.get("/")
 async def read_spaces():
@@ -63,6 +69,24 @@ async def update_space(
     """
     row = await execute_returning(query, "Space not found", building_id, name, capacity, status, category, floor, image_url, is_active, id)
     return {"updated": row["id"]}
+
+@router.post("/{id}/image")
+async def upload_space_image(id: int = Path(...), file: UploadFile = File(...)):
+    if not file:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+    
+    file_extension = file.filename.split(".")[-1]
+    file_name = f"space_{id}_{uuid.uuid4().hex[:8]}.{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, file_name)
+    
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+        
+    image_url = f"/uploads/{file_name}"
+    
+    query = "UPDATE spaces SET image_url = $1 WHERE id = $2 RETURNING id, image_url"
+    row = await execute_returning(query, "Space not found", image_url, id)
+    return {"id": row["id"], "image_url": row["image_url"]}
 
 @router.patch("/{id}/toggle-active")
 async def toggle_space_active(id: int = Path(...)):
