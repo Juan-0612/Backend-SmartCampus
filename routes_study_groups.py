@@ -130,8 +130,15 @@ async def invite_to_group(
         )
 
     target_id = target_user["id"]
-    print(f"DEBUG: Found target user ID: {target_id}")
     creator_int_id = int(creator_id)
+
+    if target_id == creator_int_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes invitarte a ti mismo. Al crear la reserva ya eres miembro del grupo."
+        )
+    
+    print(f"DEBUG: Found target user ID: {target_id}")
 
     # 2. Find or create group — use group_id directly if provided
     if group_id:
