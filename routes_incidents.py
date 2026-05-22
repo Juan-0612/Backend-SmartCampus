@@ -165,15 +165,18 @@ async def update_incident(
 
 # 📌 UPDATE STATUS
 @router.patch("/{id}/status")
-async def update_incident_status(id: int = Path(...), status: str = Form(...)):
+async def update_incident_status(
+    id: int = Path(...),
+    status: str = Form(...),
+    admin_comment: Optional[str] = Form(None)
+):
     query = """
         UPDATE incidents
-        SET status = $1
-        WHERE id = $2
+        SET status = $1, admin_comment = $2
+        WHERE id = $3
         RETURNING id
     """
-
-    row = await execute_returning(query, "Incident not found", status, id)
+    row = await execute_returning(query, "Incident not found", status, admin_comment, id)
     return {"updated": row["id"]}
 
 
