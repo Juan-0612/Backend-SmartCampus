@@ -180,9 +180,10 @@ async def update_reservation_status(
     current_user_id = int(payload["sub"])
     
     # 1. Obtener detalles de la reserva
-    res = await fetch_one("SELECT user_id, space_id, status FROM reservations WHERE id = $1", "Reservation not found", id)
+    res = await fetch_one("SELECT user_id, space_id, status, group_id FROM reservations WHERE id = $1", "Reservation not found", id)
     creator_id = res["user_id"]
     space_id = res["space_id"]
+    group_id = res.get("group_id")
 
     # 2. Obtener el rol del usuario actual
     role_row = await fetch_one("""
@@ -238,6 +239,13 @@ async def update_reservation_status(
             )
         except Exception as e:
             print(f"Error liberando horario de reserva: {e}")
+
+        # Eliminar el grupo de estudio asociado para que los usuarios sean removidos
+        if group_id:
+            try:
+                await execute_returning("DELETE FROM study_groups WHERE id = $1 RETURNING id", None, group_id)
+            except Exception as e:
+                print(f"Error eliminando grupo de estudio: {e}")
     elif status == 'CONFIRMADA':
         try:
             from datetime import time as dt_time
@@ -300,9 +308,10 @@ async def update_reservation_full(
         UPDATE reservations
         SET user_id = $1, space_id = $2, start_time = $3, end_time = $4, status = $5, type = $6, priority = $7, details = $8
         WHERE id = $9
-        RETURNING id, space_id, start_time, end_time
+        RETURNING id, space_id, start_time, end_time, group_id
     """
     row = await execute_returning(query, "Reservation not found", user_id, space_id, start_time, end_time, status, type, priority, details, id)
+    group_id = row.get("group_id")
 
     # Bloquear/desbloquear solo el horario de esta reserva, NO todo el espacio
     if status in ['CANCELADA', 'RECHAZADA']:
@@ -323,6 +332,13 @@ async def update_reservation_full(
             )
         except Exception as e:
             print(f"Error liberando horario de reserva: {e}")
+
+        # Eliminar el grupo de estudio asociado para que los usuarios sean removidos
+        if group_id:
+            try:
+                await execute_returning("DELETE FROM study_groups WHERE id = $1 RETURNING id", None, group_id)
+            except Exception as e:
+                print(f"Error eliminando grupo de estudio: {e}")
     elif status == 'CONFIRMADA':
         try:
             from datetime import time as dt_time
@@ -358,8 +374,9 @@ async def delete_reservation(
     payload: dict = Depends(verify_token)
 ):
     current_user_id = int(payload["sub"])
-    res = await fetch_one("SELECT user_id FROM reservations WHERE id = $1", "Reservation not found", id)
+    res = await fetch_one("SELECT user_id, group_id FROM reservations WHERE id = $1", "Reservation not found", id)
     creator_id = res["user_id"]
+    group_id = res.get("group_id")
 
     role_row = await fetch_one("""
         SELECT r.description 
@@ -376,4 +393,11 @@ async def delete_reservation(
         )
 
     row = await execute_returning("DELETE FROM reservations WHERE id = $1 RETURNING id", "Reservation not found", id)
+    
+    if group_id:
+        try:
+            await execute_returning("DELETE FROM study_groups WHERE id = $1 RETURNING id", None, group_id)
+        except Exception as e:
+            print(f"Error eliminando grupo de estudio: {e}")
+            
     return {"deleted": row["id"]}
