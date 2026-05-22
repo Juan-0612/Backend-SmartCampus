@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Form, HTTPException
 from db_utils import fetch_all, fetch_one, execute_returning
 from passlib.context import CryptContext
-from auth_utils import create_access_token, create_refresh_token, REFRESH_SECRET_KEY, ALGORITHM
+from auth_utils import create_access_token, create_refresh_token, verify_token, REFRESH_SECRET_KEY, ALGORITHM
 import jwt
 import re
+import uuid
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -117,17 +118,37 @@ async def register(
 @router.post("/login")
 async def login(email: str = Form(...), password: str = Form(...)):
     try:
-        row = await fetch_one("SELECT id, password_hash, COALESCE(active, TRUE) as active FROM users WHERE email = $1", "Correo o contraseña incorrectos", email.lower())
-        
+        row = await fetch_one(
+            "SELECT id, password_hash, COALESCE(active, TRUE) as active, session_token FROM users WHERE email = $1",
+            "Correo o contraseña incorrectos", email.lower()
+        )
+
         if not row or not verify_password(password, row["password_hash"]):
             raise HTTPException(401, "Correo o contraseña incorrectos")
-        
+
         if not row["active"]:
             raise HTTPException(403, "Tu cuenta ha sido bloqueada. Contacta al administrador.")
-            
-        # Retornamos user_id y token para compatibilidad con el frontend
-        access_token = create_access_token(data={"sub": str(row["id"])})
-        refresh_token = create_refresh_token(data={"sub": str(row["id"])})
+
+        # 🔒 SESIÓN ÚNICA: bloquear login si ya hay una sesión activa
+        if row["session_token"] is not None:
+            raise HTTPException(409, "Ya existe una sesión activa para este usuario. Cierra sesión en el otro dispositivo primero.")
+
+        try:
+            db_id_int = int(row["id"])
+        except (ValueError, TypeError):
+            db_id_int = row["id"]
+
+        # Generar session_token y guardarlo en la BD
+        session_token = str(uuid.uuid4())
+        await execute_returning(
+            "UPDATE users SET session_token = $1 WHERE id = $2 RETURNING id",
+            None, session_token, db_id_int
+        )
+
+        # Incluir sid en ambos tokens
+        token_data = {"sub": str(row["id"]), "sid": session_token}
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(data=token_data)
         return {
             "message": "Inicio de sesión exitoso",
             "user_id": str(row["id"]),
@@ -149,6 +170,7 @@ async def refresh(refresh_token: str = Form(...)):
         # Decodificar el refresh token usando el secreto de refresh
         payload = jwt.decode(refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
+        token_sid = payload.get("sid")
         if user_id is None:
             raise HTTPException(401, "Refresh token inválido")
             
@@ -158,18 +180,46 @@ async def refresh(refresh_token: str = Form(...)):
         except (ValueError, TypeError):
             db_id = user_id
             
-        # Opcional: verificar si el usuario sigue activo
-        row = await fetch_one("SELECT id, COALESCE(active, TRUE) as active FROM users WHERE id = $1", "User not found", db_id)
+        # Verificar usuario activo y validar session_token (sesión única)
+        row = await fetch_one(
+            "SELECT id, COALESCE(active, TRUE) as active, session_token FROM users WHERE id = $1",
+            "User not found", db_id
+        )
         if not row["active"]:
             raise HTTPException(403, "Tu cuenta ha sido bloqueada. Contacta al administrador.")
 
-        # Emitir un nuevo access token
-        new_access_token = create_access_token(data={"sub": str(user_id)})
+        db_sid = row["session_token"]
+        # Si la BD tiene session_token, el token DEBE tenerlo e igualarlo exactamente.
+        if db_sid is not None and token_sid != db_sid:
+            raise HTTPException(401, "Sesión cerrada por otro dispositivo")
+
+        # Emitir un nuevo access token manteniendo el mismo session_token
+        new_access_token = create_access_token(data={"sub": str(user_id), "sid": token_sid})
         return {"token": new_access_token}
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Refresh token expirado. Por favor, inicia sesión nuevamente.")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Refresh token inválido")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error en refresh: {e}")
         raise HTTPException(500, "Error en el servidor al renovar sesión.")
+
+@router.post("/logout")
+async def logout(user_id: str = Form(...)):
+    """Cierra la sesión borrando el session_token del usuario en la BD."""
+    try:
+        try:
+            db_id = int(user_id)
+        except (ValueError, TypeError):
+            db_id = user_id
+        await execute_returning(
+            "UPDATE users SET session_token = NULL WHERE id = $1 RETURNING id",
+            None, db_id
+        )
+        return {"message": "Sesión cerrada correctamente"}
+    except Exception as e:
+        print(f"Error en logout: {e}")
+        # No lanzar error — el logout debe ser siempre exitoso del lado del cliente
+        return {"message": "Sesión cerrada"}

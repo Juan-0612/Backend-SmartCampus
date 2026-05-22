@@ -49,12 +49,27 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
         except (ValueError, TypeError):
             db_id = user_id
 
-        # Verify user is active
-        row = await fetch_one("SELECT id, COALESCE(active, TRUE) as active FROM users WHERE id = $1", "User not found", db_id)
+        # Verify user is active and validate session_token (single-session enforcement)
+        row = await fetch_one(
+            "SELECT id, COALESCE(active, TRUE) as active, session_token FROM users WHERE id = $1",
+            "User not found", db_id
+        )
         if not row["active"]:
             raise HTTPException(status_code=403, detail="Prohibido: Cuenta inactiva")
-        
+
+        token_sid = payload.get("sid")
+        db_sid = row["session_token"]
+        # Si la BD tiene un session_token registrado, el token DEBE tenerlo e igualarlo.
+        # Esto rechaza: tokens viejos sin sid, y tokens de sesiones anteriores.
+        if db_sid is not None and token_sid != db_sid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sesión cerrada por otro dispositivo",
+            )
+
         return payload
+    except HTTPException:
+        raise
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
