@@ -213,20 +213,58 @@ async def update_reservation_status(
                 detail="Prohibido: Acción no permitida para tu rol."
             )
 
-    query = "UPDATE reservations SET status = $1 WHERE id = $2 RETURNING id, space_id"
+    query = "UPDATE reservations SET status = $1 WHERE id = $2 RETURNING id, space_id, start_time, end_time"
     row = await execute_returning(query, "Reservation not found", status, id)
-    
-    # Si la reserva se cancela o rechaza, liberar el espacio si no hay otras activas
+    space_id = row["space_id"]
+    start_time = row["start_time"]
+    end_time = row["end_time"]
+
+    # Bloquear/desbloquear solo el horario de esta reserva, NO todo el espacio
     if status in ['CANCELADA', 'RECHAZADA']:
         try:
-            await execute_returning("UPDATE spaces SET status = 'available' WHERE id = $1 RETURNING id", None, space_id)
+            from datetime import time as dt_time
+            day = start_time.weekday()
+            t_start = dt_time(start_time.hour, start_time.minute)
+            t_end = dt_time(end_time.hour, end_time.minute)
+            await execute_returning(
+                """
+                DELETE FROM space_schedules
+                WHERE space_id = $1 AND day_of_week = $2
+                  AND start_time = $3 AND end_time = $4
+                  AND is_free = FALSE AND description = 'Reserva'
+                RETURNING id
+                """,
+                None, space_id, day, t_start, t_end
+            )
         except Exception as e:
-            print(f"Error releasing space: {e}")
-    elif status in ['CONFIRMADA', 'PENDIENTE']:
+            print(f"Error liberando horario de reserva: {e}")
+    elif status == 'CONFIRMADA':
         try:
-            await execute_returning("UPDATE spaces SET status = 'occupied' WHERE id = $1 RETURNING id", None, space_id)
+            from datetime import time as dt_time
+            day = start_time.weekday()
+            t_start = dt_time(start_time.hour, start_time.minute)
+            t_end = dt_time(end_time.hour, end_time.minute)
+            # Insertar bloqueo solo si no existe ya
+            existing = await fetch_all(
+                """
+                SELECT id FROM space_schedules
+                WHERE space_id = $1 AND day_of_week = $2
+                  AND start_time = $3 AND end_time = $4
+                  AND is_free = FALSE AND description = 'Reserva'
+                """,
+                space_id, day, t_start, t_end
+            )
+            if not existing:
+                await execute_returning(
+                    """
+                    INSERT INTO space_schedules (space_id, day_of_week, start_time, end_time, is_active, is_free, description)
+                    VALUES ($1, $2, $3, $4, TRUE, FALSE, 'Reserva')
+                    RETURNING id
+                    """,
+                    None, space_id, day, t_start, t_end
+                )
         except Exception as e:
-            print(f"Error marking space occupied: {e}")
+            print(f"Error bloqueando horario de reserva: {e}")
 
     return {"updated": row["id"]}
 
@@ -262,21 +300,55 @@ async def update_reservation_full(
         UPDATE reservations
         SET user_id = $1, space_id = $2, start_time = $3, end_time = $4, status = $5, type = $6, priority = $7, details = $8
         WHERE id = $9
-        RETURNING id
+        RETURNING id, space_id, start_time, end_time
     """
     row = await execute_returning(query, "Reservation not found", user_id, space_id, start_time, end_time, status, type, priority, details, id)
-    
-    # Si la reserva se cancela o rechaza, liberar el espacio si no hay otras activas
+
+    # Bloquear/desbloquear solo el horario de esta reserva, NO todo el espacio
     if status in ['CANCELADA', 'RECHAZADA']:
         try:
-            await execute_returning("UPDATE spaces SET status = 'available' WHERE id = $1 RETURNING id", None, space_id)
+            from datetime import time as dt_time
+            day = start_time.weekday()
+            t_start = dt_time(start_time.hour, start_time.minute)
+            t_end = dt_time(end_time.hour, end_time.minute)
+            await execute_returning(
+                """
+                DELETE FROM space_schedules
+                WHERE space_id = $1 AND day_of_week = $2
+                  AND start_time = $3 AND end_time = $4
+                  AND is_free = FALSE AND description = 'Reserva'
+                RETURNING id
+                """,
+                None, space_id, day, t_start, t_end
+            )
         except Exception as e:
-            print(f"Error releasing space: {e}")
-    elif status in ['CONFIRMADA', 'PENDIENTE']:
+            print(f"Error liberando horario de reserva: {e}")
+    elif status == 'CONFIRMADA':
         try:
-            await execute_returning("UPDATE spaces SET status = 'occupied' WHERE id = $1 RETURNING id", None, space_id)
+            from datetime import time as dt_time
+            day = start_time.weekday()
+            t_start = dt_time(start_time.hour, start_time.minute)
+            t_end = dt_time(end_time.hour, end_time.minute)
+            existing = await fetch_all(
+                """
+                SELECT id FROM space_schedules
+                WHERE space_id = $1 AND day_of_week = $2
+                  AND start_time = $3 AND end_time = $4
+                  AND is_free = FALSE AND description = 'Reserva'
+                """,
+                space_id, day, t_start, t_end
+            )
+            if not existing:
+                await execute_returning(
+                    """
+                    INSERT INTO space_schedules (space_id, day_of_week, start_time, end_time, is_active, is_free, description)
+                    VALUES ($1, $2, $3, $4, TRUE, FALSE, 'Reserva')
+                    RETURNING id
+                    """,
+                    None, space_id, day, t_start, t_end
+                )
         except Exception as e:
-            print(f"Error marking space occupied: {e}")
+            print(f"Error bloqueando horario de reserva: {e}")
 
     return {"updated": row["id"]}
 
