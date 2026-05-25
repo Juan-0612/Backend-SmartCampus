@@ -129,9 +129,9 @@ async def login(email: str = Form(...), password: str = Form(...)):
         if not row["active"]:
             raise HTTPException(403, "Tu cuenta ha sido bloqueada. Contacta al administrador.")
 
-        # 🔒 SESIÓN ÚNICA: bloquear login si ya hay una sesión activa
-        if row["session_token"] is not None:
-            raise HTTPException(409, "Ya existe una sesión activa para este usuario. Cierra sesión en el otro dispositivo primero.")
+        # 🔒 SESIÓN ÚNICA: Permitir login desde nuevo dispositivo
+        # El nuevo login sobrescribirá el session_token en la BD,
+        # lo que invalidará automáticamente la sesión en el dispositivo anterior.
 
         try:
             db_id_int = int(row["id"])
